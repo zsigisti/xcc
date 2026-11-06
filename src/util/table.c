@@ -4,15 +4,13 @@
 #include <stdlib.h>  // malloc
 #include <string.h>
 
+#include "hassh.h"
+
 // Hash
 
 static uint32_t hash_string(const char *key, int length) {
-  const unsigned char *u = (const unsigned char*)key;
-  // FNV1a
-  uint32_t hash = 2166136261u;
-  for (int i = 0; i < length; ++i)
-    hash = (hash ^ u[i]) * 16777619u;
-  return hash;
+  // hassh64, truncated to the table's 32-bit hash.
+  return (uint32_t)hassh64(key, length, 0);
 }
 
 // Name
