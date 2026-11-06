@@ -9,6 +9,7 @@
 #include "ast.h"
 #include "cc_misc.h"  // is_function_omitted
 #include "fe_misc.h"  // curfunc, curscope
+#include "initializer.h"
 #include "table.h"
 #include "type.h"
 #include "util.h"
@@ -580,6 +581,32 @@ int get_funparam_index(Function *func, const Name *name) {
   return -1;
 }
 
+// Size of a local variable on the stack frame: a struct with a flexible array
+// member also needs room for the elements given in its initializer.
+static size_t local_var_size(const VarInfo *varinfo) {
+  const Type *type = varinfo->type;
+  size_t size = type_size(type);
+  if (type->kind == TY_STRUCT && type->struct_.info->flag & SIF_FLEXIBLE &&
+      !(varinfo->storage & VS_PARAM)) {
+    const Initializer *init = varinfo->local.init;
+    if (init != NULL) {
+      int m = type->struct_.info->member_count;
+      assert(init->kind == IK_MULTI);
+      assert(init->multi->len == m);
+      const Initializer *e = init->multi->data[m - 1];
+      if (e != NULL) {
+        assert(e->kind == IK_MULTI);
+        const MemberInfo *member = &type->struct_.info->members[m - 1];
+        assert(member->type->kind == TY_ARRAY);
+        size += type_size(member->type->pa.ptrof) * e->multi->len;
+      }
+    }
+  }
+  if (size < 1)
+    size = 1;
+  return size;
+}
+
 static inline uint32_t calc_frame_size(
     Function *func, unsigned int local_counts[4], FuncInfo *finfo) {
   const Type *functype = func->type;
@@ -616,9 +643,7 @@ static inline uint32_t calc_frame_size(
       if ((varinfo->storage & VS_REF_TAKEN) ||
           (param_index < 0 && !is_prim_type(type)) ||
           (param_index >= 0 && is_small_struct(type))) {
-        size_t size = type_size(type);
-        if (size < 1)
-          size = 1;
+        size_t size = local_var_size(varinfo);
         frame_size = ALIGN(frame_size, align_size(type)) + size;
       } else if (is_prim_type(type)) {
         if (param_index < 0) {
@@ -693,15 +718,12 @@ static inline void assign_variable_index_or_offsets(
       varinfo->local.vreg = vreg;
       vreg->param_index = -1;
       const Type *type = varinfo->type;
-      size_t size = type_size(type), align = align_size(type);
       bool prim = is_prim_type(type);
       if ((prim && varinfo->storage & VS_REF_TAKEN) ||  // `&` taken wasm local var.
           !prim) {  // non-prim variable (not function parameter)
-        frame_offset = ALIGN(frame_offset, align);
+        frame_offset = ALIGN(frame_offset, align_size(type));
         vreg->non_prim.offset = frame_offset - frame_size;
-        if (size < 1)
-          size = 1;
-        frame_offset += size;
+        frame_offset += local_var_size(varinfo);
       } else {  // Not `&` taken, wasm local var.
         unsigned char wt = to_wtype(type);
         int index = WT_I32 - wt;
